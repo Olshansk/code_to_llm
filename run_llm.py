@@ -1,0 +1,124 @@
+import argparse
+import os
+
+import openai
+
+
+# Function to read data from concat.txt
+def read_data(file_path):
+    """
+    Read the content of the specified file.
+
+    :param file_path: Path to the file to read
+    :return: Content of the file
+    """
+    with open(file_path, "r") as file:
+        return file.read()
+
+
+# Function to send data to GPT-4 and get the response
+def get_gpt4_response(data, custom_prompt, programming_language):
+    """
+    Send data and a custom prompt to GPT-4 and retrieve the response.
+
+    :param data: The concatenated file content to send to GPT-4
+    :param custom_prompt: The custom prompt to guide GPT-4
+    :param programming_language: The programming language to specify in the system message
+    :return: The response from GPT-4
+    """
+    # Ensure the API key is set
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+    # System message for GPT-4 to specify its role
+    system_message = {
+        "role": "system",
+        "content": f"You are an expert {programming_language} programmer.",
+    }
+
+    # User message with the custom prompt and the data
+    user_message = {"role": "user", "content": f"{custom_prompt}\n\n{data}"}
+
+    # Send the request to GPT-4 and get the response
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5", messages=[system_message, user_message]
+    )
+
+    # Return the content of the response
+    return response.choices[0].message["content"]
+
+
+# Function to save response to a .diff file
+def save_to_diff_file(response, output_path):
+    """
+    Save the GPT-4 response to a .diff file.
+
+    :param response: The response content from GPT-4
+    :param output_path: Path to the output .diff file
+    """
+    with open(output_path, "w") as file:
+        file.write(response)
+
+
+# Main function to coordinate reading, processing, and saving
+def main(file_path, custom_prompt, programming_language, output_path):
+    """
+    Main function to generate a unit test diff using GPT-4.
+
+    :param file_path: Path to the concat.txt file
+    :param custom_prompt: Custom prompt for GPT-4
+    :param programming_language: Programming language for the system message
+    :param output_path: Path to the output .diff file
+    """
+    # Read the data from concat.txt
+    data = read_data(file_path)
+
+    # Get the GPT-4 response
+    response = get_gpt4_response(data, custom_prompt, programming_language)
+
+    # Save the response to a .diff file
+    save_to_diff_file(response, output_path)
+
+    print(f"Response saved to {output_path}")
+
+
+# Entry point of the script
+if __name__ == "__main__":
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Generate a unit test using GPT-4")
+    parser.add_argument("file_path", type=str, help="Path to the concat.txt file")
+    parser.add_argument(
+        "output",
+        type=str,
+        default="",
+        help="Output file path for the diff content",
+    )
+    parser.add_argument("--custom_prompt", type=str, help="Custom prompt for GPT-4")
+    parser.add_argument(
+        "--programming_language",
+        type=str,
+        default="Golang",
+        help="Programming language for the system message",
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    if args.custom_prompt == "":
+        args.custom_prompt = f"""
+            Below you will find the concatinated code for a ring signature library in Golang.
+
+            I received the following question:
+
+            ```
+                Question: Have you considered using a ring size 1 for such special cases? A ring of size 1 just reduces to a schnorr signature.
+                I'm not 100% sure if the library would actually just work if it was used to sign/verify with a ring size of 1, but a lot of the code seems like it would still mostly work when size = 1, i = 0; c[0] = c[(i + 1) % 1] even if the execution would be rather roundabout. But a better solution would be a short-circuit to a size = 1 special-case schnorr signature that skips the ring-specific parts.
+                Basically, instead of all the c[i] parts it would just be  c = challenge(ring.curve, m, l, r) and closing the ring on the single signer by calculating s = u.Sub(cx).
+            ```
+
+            Please generate a unit test, with comments that tackles the question above in {args.programming_language}.
+
+            Here is the code:
+        """
+
+    # Run main function with parsed arguments
+    main(args.file_path, args.custom_prompt, args.programming_language, args.output)

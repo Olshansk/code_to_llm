@@ -4,7 +4,8 @@ SHELL := /bin/bash
 REPO_PATH ?= /Users/olshansky/workspace/pocket/ring-go
 # EXTENSIONS ?= .go .md
 EXTENSIONS ?= .go
-OUTPUT ?= concat.txt
+OUTPUT_CONCAT_FILE_PATH ?= concat.txt
+OUTPUT_DIFF_FILE_PATH ?= output.diff
 
 .SILENT:
 
@@ -60,6 +61,15 @@ py_format: check-env  ## Format the python code
 ### Your stuff   ###
 ####################
 
-.PHONY: concat
-concat: check-env  ## Concatenate the files
-	python3 concat_repo.py $(REPO_PATH) $(EXTENSIONS) --output $(OUTPUT)
+.PHONY: concat_repo
+concat_repo: check-env  ## Concatenate the files
+	python3 concat_repo.py $(REPO_PATH) $(EXTENSIONS) --output $(OUTPUT_CONCAT_FILE_PATH)
+	@echo "Concatenated files are in $(OUTPUT_CONCAT_FILE_PATH)"
+
+.PHONY: estimate_tokens
+estimate_tokens:  ## Estimate the number of tokens in a .txt file
+	python estimate_tokens.py $(OUTPUT_CONCAT_FILE_PATH)
+
+.PHONY: run_llm
+run_llm:  ## Generate a unit test using GPT-4
+	python run_llm.py $(OUTPUT_CONCAT_FILE_PATH) $(OUTPUT_DIFF_FILE_PATH)
