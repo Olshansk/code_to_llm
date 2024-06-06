@@ -1,0 +1,1140 @@
+File: /Users/olshansky/workspace/pocket/ring-go/serde_test.go
+package ring
+
+import (
+	"crypto/rand"
+	"math/big"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/sha3"
+)
+
+func testSerializeAndDeserialize(t *testing.T, curve Curve, size, idx int) {
+	privKey := curve.NewRandomScalar()
+	msgHash := sha3.Sum256([]byte("helloworld"))
+
+	keyring, err := NewKeyRing(curve, size, privKey, idx)
+	require.NoError(t, err)
+
+	sig, err := Sign(msgHash, keyring, privKey, idx)
+	require.NoError(t, err)
+
+	byteSig, err := sig.Serialize()
+	require.NoError(t, err)
+
+	res := new(RingSig)
+	err = res.Deserialize(curve, byteSig)
+	require.NoError(t, err)
+	require.Equal(t, sig.ring.Size(), res.ring.Size())
+	require.Equal(t, sig.c, res.c)
+	require.True(t, sig.image.Equals(res.image))
+	require.Equal(t, sig.s, res.s)
+
+	for i := 0; i < sig.ring.Size(); i++ {
+		require.True(t, res.ring.pubkeys[i].Equals(sig.ring.pubkeys[i]))
+	}
+}
+
+func TestSerializeAndDeserialize_Secp256k1(t *testing.T) {
+	maxSize := 16
+	curve := Secp256k1()
+	for i := 2; i < maxSize; i++ {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(i)))
+		require.NoError(t, err)
+		testSerializeAndDeserialize(t, curve, i, int(idx.Int64()))
+	}
+}
+
+func TestSerializeAndDeserialize_Ed25519(t *testing.T) {
+	maxSize := 16
+	curve := Ed25519()
+	for i := 2; i < maxSize; i++ {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(i)))
+		require.NoError(t, err)
+		testSerializeAndDeserialize(t, curve, i, int(idx.Int64()))
+	}
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/types.go
+package ring
+
+import (
+	"github.com/athanorlabs/go-dleq/ed25519"
+	"github.com/athanorlabs/go-dleq/secp256k1"
+	"github.com/athanorlabs/go-dleq/types"
+)
+
+type (
+	// Curve represents an elliptic curve that can be used for signing.
+	Curve = types.Curve
+)
+
+// Ed25519 returns a new ed25519 curve instance.
+func Ed25519() types.Curve {
+	return ed25519.NewCurve()
+}
+
+// Secp256k1 returns a new secp256k1 curve instance
+func Secp256k1() types.Curve {
+	return secp256k1.NewCurve()
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/serde.go
+package ring
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+
+	"github.com/athanorlabs/go-dleq/types"
+)
+
+// Serialize converts the signature to a byte array.
+func (r *RingSig) Serialize() ([]byte, error) {
+	sig := []byte{}
+	size := len(r.ring.pubkeys)
+
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, uint32(size))
+	sig = append(sig, b[:]...)
+	sig = append(sig, r.c.Encode()...)
+	sig = append(sig, r.image.Encode()...)
+
+	for i := 0; i < size; i++ {
+		sig = append(sig, r.s[i].Encode()...)
+		sig = append(sig, r.ring.pubkeys[i].Encode()...)
+	}
+
+	return sig, nil
+}
+
+// Deserialize converts the byteified signature into a *RingSig.
+func (sig *RingSig) Deserialize(curve Curve, in []byte) error {
+	reader := bytes.NewBuffer(in)
+	pointLen := curve.CompressedPointSize()
+
+	size := binary.BigEndian.Uint32(reader.Next(4))
+	if len(in) < int(size)*pointLen {
+		return errors.New("input too short")
+	}
+
+	// WARN: this assumes the groups have an encoded scalar length of 32!
+	// which is fine for ed25519 and secp256k1, but may need to be changed
+	// if other curves are added.
+	const scalarLen = 32
+
+	var err error
+	sig.c, err = curve.DecodeToScalar(reader.Next(scalarLen))
+	if err != nil {
+		return err
+	}
+
+	sig.image, err = curve.DecodeToPoint(reader.Next(pointLen))
+	if err != nil {
+		return err
+	}
+
+	sig.ring = &Ring{
+		pubkeys: make([]types.Point, size),
+		curve:   curve,
+	}
+	sig.s = make([]types.Scalar, size)
+
+	for i := 0; i < int(size); i++ {
+		sig.s[i], err = curve.DecodeToScalar(reader.Next(scalarLen))
+		if err != nil {
+			return err
+		}
+
+		sig.ring.pubkeys[i], err = curve.DecodeToPoint(reader.Next(pointLen))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/helpers_test.go
+package ring
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestHashToCurveSecp256k1(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	p := hashToCurve(curve.ScalarBaseMul(privKey))
+	require.NotNil(t, p)
+}
+
+func TestHashToCurveEd25519(t *testing.T) {
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	p := hashToCurve(curve.ScalarBaseMul(privKey))
+	require.NotNil(t, p)
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/bench_test.go
+package ring
+
+import (
+	"testing"
+
+	"github.com/athanorlabs/go-dleq/types"
+)
+
+const idx = 0
+
+func benchmarkSign(b *testing.B, curve types.Curve, keyring *Ring, privKey types.Scalar, size, idx int) {
+	for i := 0; i < b.N; i++ {
+		_, err := keyring.Sign(testMsg, privKey)
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
+func mustKeyRing(curve types.Curve, privKey types.Scalar, size, idx int) *Ring {
+	keyring, err := NewKeyRing(curve, size, privKey, idx)
+	if err != nil {
+		panic(err)
+	}
+	return keyring
+}
+
+func BenchmarkSign2_Secp256k1(b *testing.B) {
+	const size = 2
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign4_Secp256k1(b *testing.B) {
+	const size = 4
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign8_Secp256k1(b *testing.B) {
+	const size = 8
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign16_Secp256k1(b *testing.B) {
+	const size = 16
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign32_Secp256k1(b *testing.B) {
+	const size = 2
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign64_Secp256k1(b *testing.B) {
+	const size = 64
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign128_Secp256k1(b *testing.B) {
+	const size = 128
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign2_Ed25519(b *testing.B) {
+	const size = 2
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign4_Ed25519(b *testing.B) {
+	const size = 4
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign8_Ed25519(b *testing.B) {
+	const size = 8
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign16_Ed25519(b *testing.B) {
+	const size = 16
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign32_Ed25519(b *testing.B) {
+	const size = 32
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign64_Ed25519(b *testing.B) {
+	const size = 64
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func BenchmarkSign128_Ed25519(b *testing.B) {
+	const size = 128
+	curve := Ed25519()
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+	benchmarkSign(b, curve, keyring, privKey, size, idx)
+}
+
+func benchmarkVerify(b *testing.B, sig *RingSig) {
+	for i := 0; i < b.N; i++ {
+		ok := sig.Verify(testMsg)
+		if !ok {
+			panic("did not verify signature")
+		}
+	}
+}
+
+func mustSig(curve types.Curve, size int) *RingSig {
+	privKey := curve.NewRandomScalar()
+	keyring := mustKeyRing(curve, privKey, size, idx)
+
+	sig, err := keyring.Sign(testMsg, privKey)
+	if err != nil {
+		panic(err)
+	}
+
+	return sig
+}
+
+func BenchmarkVerify2_Secp256k1(b *testing.B) {
+	const size = 2
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify4_Secp256k1(b *testing.B) {
+	const size = 4
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify8_Secp256k1(b *testing.B) {
+	const size = 8
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify16_Secp256k1(b *testing.B) {
+	const size = 16
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify32_Secp256k1(b *testing.B) {
+	const size = 32
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify64_Secp256k1(b *testing.B) {
+	const size = 64
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify128_Secp256k1(b *testing.B) {
+	const size = 128
+	curve := Secp256k1()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify2_Ed25519(b *testing.B) {
+	const size = 2
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify4_Ed25519(b *testing.B) {
+	const size = 4
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify8_Ed25519(b *testing.B) {
+	const size = 8
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify16_Ed25519(b *testing.B) {
+	const size = 16
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify32_Ed25519(b *testing.B) {
+	const size = 32
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify64_Ed25519(b *testing.B) {
+	const size = 64
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+func BenchmarkVerify128_Ed25519(b *testing.B) {
+	const size = 128
+	curve := Ed25519()
+	sig := mustSig(curve, size)
+	benchmarkVerify(b, sig)
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/ring.go
+package ring
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/athanorlabs/go-dleq/types"
+)
+
+// Ring represents a group of public keys such that one of the group created a signature.
+type Ring struct {
+	pubkeys []types.Point
+	curve   types.Curve
+}
+
+// Size returns the size of the ring, ie. the number of public keys in it.
+func (r *Ring) Size() int {
+	return len(r.pubkeys)
+}
+
+// Equals checks whether the supplied ring is equal to the current ring.
+// The ring's public keys must be in the same order for the rings to be equal
+func (ring *Ring) Equals(other *Ring) bool {
+	for i, p := range ring.pubkeys {
+		if !p.Equals(other.pubkeys[i]) {
+			return false
+		}
+	}
+	bp, abp := ring.curve.BasePoint(), ring.curve.AltBasePoint()
+	obp, oabp := other.curve.BasePoint(), other.curve.AltBasePoint()
+	return bp.Equals(obp) && abp.Equals(oabp)
+}
+
+// RingSig represents a ring signature.
+type RingSig struct {
+	ring  *Ring          // array of public keys
+	c     types.Scalar   // ring signature challenge
+	s     []types.Scalar // ring signature values
+	image types.Point    // key image
+}
+
+// PublicKeys returns a copy of the ring signature's public keys.
+func (r *RingSig) PublicKeys() []types.Point {
+	ret := make([]types.Point, len(r.ring.pubkeys))
+	for i, pk := range r.ring.pubkeys {
+		ret[i] = pk.Copy()
+	}
+	return ret
+}
+
+// Ring returns the ring from the RingSig struct
+func (r *RingSig) Ring() *Ring {
+	return r.ring
+}
+
+// NewKeyRingFromPublicKeys takes public key ring and places the public key corresponding to `privKey`
+// in index idx of the ring.
+// It returns a ring of public keys of length `len(ring)+1`.
+func NewKeyRingFromPublicKeys(curve types.Curve, pubkeys []types.Point, privKey types.Scalar, idx int) (*Ring, error) {
+	size := len(pubkeys) + 1
+	newRing := make([]types.Point, size)
+	pubkey := curve.ScalarBaseMul(privKey)
+
+	if idx > len(pubkeys) {
+		return nil, errors.New("index out of bounds")
+	}
+
+	newRing[idx] = pubkey
+	for i := 1; i < size; i++ {
+		idx := (i + idx) % size
+		newRing[idx] = pubkeys[i-1]
+	}
+
+	return &Ring{
+		pubkeys: newRing,
+		curve:   curve,
+	}, nil
+}
+
+// NewFixedKeyRingFromPublicKeys takes public keys and a curve to create a ring
+func NewFixedKeyRingFromPublicKeys(curve types.Curve, pubkeys []types.Point) (*Ring, error) {
+	size := len(pubkeys)
+	newRing := make([]types.Point, size)
+	for i := 0; i < size; i++ {
+		newRing[i] = pubkeys[i].Copy()
+	}
+
+	return &Ring{
+		pubkeys: newRing,
+		curve:   curve,
+	}, nil
+}
+
+// NewKeyRing creates a ring with size specified by `size` and places the public key corresponding
+// to `privKey` in index idx of the ring.
+// It returns a ring of public keys of length `size`.
+func NewKeyRing(curve types.Curve, size int, privKey types.Scalar, idx int) (*Ring, error) {
+	if idx >= size {
+		return nil, errors.New("index out of bounds")
+	}
+
+	ring := make([]types.Point, size)
+	pubkey := curve.ScalarBaseMul(privKey)
+	ring[idx] = pubkey
+
+	for i := 1; i < size; i++ {
+		idx := (i + idx) % size
+		priv := curve.NewRandomScalar()
+		ring[idx] = curve.ScalarBaseMul(priv)
+	}
+
+	return &Ring{
+		pubkeys: ring,
+		curve:   curve,
+	}, nil
+}
+
+// Sign creates a ring signature on the given message using the public key ring
+// and a private key of one of the members of the ring.
+func (r *Ring) Sign(m [32]byte, privKey types.Scalar) (*RingSig, error) {
+	ourIdx := -1
+	pubkey := r.curve.ScalarBaseMul(privKey)
+	for i, pk := range r.pubkeys {
+		if pk.Equals(pubkey) {
+			ourIdx = i
+			break
+		}
+	}
+
+	if ourIdx == -1 {
+		return nil, errors.New("failed to find given key in public key set")
+	}
+
+	return Sign(m, r, privKey, ourIdx)
+}
+
+// Sign creates a ring signature on the given message using the provided private key
+// and ring of public keys.
+func Sign(m [32]byte, ring *Ring, privKey types.Scalar, ourIdx int) (*RingSig, error) {
+	size := len(ring.pubkeys)
+	if size < 2 {
+		return nil, errors.New("size of ring less than two")
+	}
+
+	if ourIdx >= size {
+		return nil, errors.New("secret index out of range of ring size")
+	}
+
+	// check that key at index s is indeed the signer
+	pubkey := ring.curve.ScalarBaseMul(privKey)
+	if !ring.pubkeys[ourIdx].Equals(pubkey) {
+		return nil, errors.New("secret index in ring is not signer")
+	}
+
+	// setup
+	curve := ring.curve
+	h := hashToCurve(pubkey)
+	sig := &RingSig{
+		ring: ring,
+		// calculate key image I = x * H_p(P) where H_p is a hash-to-curve function
+		image: curve.ScalarMul(privKey, h),
+	}
+
+	// start at c[j]
+	c := make([]types.Scalar, size)
+	s := make([]types.Scalar, size)
+
+	// pick random scalar u, calculate L[j] = u*G
+	u := curve.NewRandomScalar()
+	l := curve.ScalarBaseMul(u)
+
+	// compute R[j] = u*H_p(P[j])
+	r := curve.ScalarMul(u, h)
+
+	// calculate challenge c[j+1] = H(m, L_j, R_j)
+	idx := (ourIdx + 1) % size
+	c[idx] = challenge(ring.curve, m, l, r)
+
+	// start loop at j+1
+	for i := 1; i < size; i++ {
+		idx := (ourIdx + i) % size
+		if ring.pubkeys[idx] == nil {
+			return nil, fmt.Errorf("no public key at index %d", idx)
+		}
+
+		// pick random scalar s_i
+		s[idx] = curve.NewRandomScalar()
+
+		// calculate L_i = s_i*G + c_i*P_i
+		cP := curve.ScalarMul(c[idx], ring.pubkeys[idx])
+		sG := curve.ScalarBaseMul(s[idx])
+		l := cP.Add(sG)
+
+		// calculate R_i = s_i*H_p(P_i) + c_i*I
+		cI := curve.ScalarMul(c[idx], sig.image)
+		hp := hashToCurve(ring.pubkeys[idx])
+		sH := curve.ScalarMul(s[idx], hp)
+		r := cI.Add(sH)
+
+		// calculate c[i+1] = H(m, L_i, R_i)
+		c[(idx+1)%size] = challenge(curve, m, l, r)
+	}
+
+	// close ring by finding s[j] = u - c[j]*x
+	cx := c[ourIdx].Mul(privKey)
+	s[ourIdx] = u.Sub(cx)
+
+	// check that u*G = s[j]*G + c[j]*P[j]
+	cP := curve.ScalarMul(c[ourIdx], pubkey)
+	sG := curve.ScalarBaseMul(s[ourIdx])
+	lNew := cP.Add(sG)
+	if !lNew.Equals(l) {
+		// this should not happen
+		return nil, errors.New("failed to close ring: uG != sG + cP")
+	}
+
+	// check that u*H_p(P[j]) = s[j]*H_p(P[j]) + c[j]*I
+	cI := curve.ScalarMul(c[ourIdx], sig.image)
+	sH := curve.ScalarMul(s[ourIdx], h)
+	rNew := cI.Add(sH)
+	if !rNew.Equals(r) {
+		// this should not happen
+		return nil, errors.New("failed to close ring: uH(P) != sH(P) + cI")
+	}
+
+	// check that H(m, L[j], R[j]) == c[j+1]
+	cCheck := challenge(ring.curve, m, l, r)
+	if !cCheck.Eq(c[(ourIdx+1)%size]) {
+		return nil, errors.New("challenge check failed")
+	}
+
+	// everything ok, add values to signature
+	sig.s = s
+	sig.c = c[0]
+	return sig, nil
+}
+
+// Verify verifies the ring signature for the given message.
+// It returns true if a valid signature, false otherwise.
+func (sig *RingSig) Verify(m [32]byte) bool {
+	// setup
+	ring := sig.ring
+	size := len(ring.pubkeys)
+	c := make([]types.Scalar, size)
+	c[0] = sig.c
+	curve := ring.curve
+
+	// calculate c[i+1] = H(m, s[i]*G + c[i]*P[i])
+	// and c[0] = H)(m, s[n-1]*G + c[n-1]*P[n-1]) where n is the ring size
+	for i := 0; i < size; i++ {
+		// calculate L_i = s_i*G + c_i*P_i
+		cP := curve.ScalarMul(c[i], ring.pubkeys[i])
+		sG := curve.ScalarBaseMul(sig.s[i])
+		l := cP.Add(sG)
+
+		// calculate R_i = s_i*H_p(P_i) + c_i*I
+		cI := curve.ScalarMul(c[i], sig.image)
+		h := hashToCurve(ring.pubkeys[i])
+		sH := curve.ScalarMul(sig.s[i], h)
+		r := cI.Add(sH)
+
+		// calculate c[i+1] = H(m, L_i, R_i)
+		if i == size-1 {
+			c[0] = challenge(curve, m, l, r)
+		} else {
+			c[i+1] = challenge(curve, m, l, r)
+		}
+	}
+
+	return sig.c.Eq(c[0])
+}
+
+// Link returns true if the two signatures were created by the same signer,
+// false otherwise.
+func Link(sigA, sigB *RingSig) bool {
+	return sigA.image.Equals(sigB.image)
+}
+
+func challenge(curve types.Curve, m [32]byte, l, r types.Point) types.Scalar {
+	t := append(m[:], append(l.Encode(), r.Encode()...)...)
+	c, err := curve.HashToScalar(t)
+	if err != nil {
+		// this should not happen
+		panic(err)
+	}
+	return c
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/ring_test.go
+package ring
+
+import (
+	"crypto/rand"
+	"math/big"
+	"testing"
+
+	"github.com/athanorlabs/go-dleq/types"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/sha3"
+)
+
+var (
+	testMsg = sha3.Sum256([]byte("helloworld"))
+)
+
+func createSigWithCurve(t *testing.T, curve types.Curve, size, idx int) *RingSig {
+	// instantiate private key
+	privKey := curve.NewRandomScalar()
+
+	// generate keyring
+	keyring, err := NewKeyRing(curve, size, privKey, idx)
+	require.NoError(t, err)
+
+	// sign message
+	sig, err := keyring.Sign(testMsg, privKey)
+	require.NoError(t, err)
+	return sig
+}
+
+func createSig(t *testing.T, size, idx int) *RingSig {
+	return createSigWithCurve(t, Secp256k1(), size, idx)
+}
+
+func TestSign_Loop_Ed25519(t *testing.T) {
+	maxSize := 100
+	curve := Ed25519()
+	for i := 2; i < maxSize; i++ {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(i)))
+		require.NoError(t, err)
+		sig := createSigWithCurve(t, curve, i, int(idx.Int64()))
+		require.True(t, sig.Verify(testMsg))
+	}
+}
+
+func TestSign_Loop_Secp256k1(t *testing.T) {
+	maxSize := 100
+	for i := 2; i < maxSize; i++ {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(i)))
+		require.NoError(t, err)
+		sig := createSig(t, i, int(idx.Int64()))
+		require.True(t, sig.Verify(testMsg))
+	}
+}
+
+func TestNewKeyRing(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring, err := NewKeyRing(curve, 2, privKey, 0)
+	require.NoError(t, err)
+	require.NotNil(t, keyring)
+	require.Equal(t, 2, len(keyring.pubkeys))
+}
+
+func TestNewKeyRing3(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring, err := NewKeyRing(curve, 3, privKey, 1)
+	require.NoError(t, err)
+	require.NotNil(t, keyring)
+	require.Equal(t, 3, len(keyring.pubkeys))
+}
+
+func TestNewKeyRing_IdxOutOfBounds(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	_, err := NewKeyRing(curve, 2, privKey, 3)
+	require.Error(t, err)
+}
+
+func TestGenKeyRing(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	s := 0
+	size := 3
+
+	// generate some pubkeys for the keyring
+	pubkeys := make([]types.Point, size)
+	for i := 0; i < size; i++ {
+		priv := curve.NewRandomScalar()
+		pubkeys[i] = curve.ScalarBaseMul(priv)
+	}
+
+	keyring, err := NewKeyRingFromPublicKeys(curve, pubkeys, privKey, s)
+	require.NoError(t, err)
+	require.NotNil(t, keyring)
+	require.Equal(t, size+1, keyring.Size())
+	require.True(t, keyring.pubkeys[s].Equals(curve.ScalarBaseMul(privKey)))
+
+	fixedKeys := make([]types.Point, size+1)
+	fixedKeys[0] = curve.ScalarBaseMul(privKey)
+	copy(fixedKeys[1:], pubkeys)
+	keyring, err = NewFixedKeyRingFromPublicKeys(curve, fixedKeys)
+	require.NoError(t, err)
+	require.NotNil(t, keyring)
+	for i := 0; i < size; i++ {
+		require.True(t, keyring.pubkeys[i].Equals(fixedKeys[i]))
+	}
+}
+
+func TestRing_Equals(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring, err := NewKeyRing(curve, 10, privKey, 0)
+	require.NoError(t, err)
+	keyring2, err := NewKeyRing(curve, 10, privKey, 0)
+	require.NoError(t, err)
+	require.False(t, keyring.Equals(keyring2)) // NewKeyRing generates random pubkeys
+	keyring3, err := NewFixedKeyRingFromPublicKeys(curve, keyring.pubkeys)
+	require.NoError(t, err)
+	require.True(t, keyring.Equals(keyring3))
+}
+
+func TestSig_RingEquals(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	keyring, err := NewKeyRing(curve, 10, privKey, 0)
+	require.NoError(t, err)
+	keyring2, err := NewKeyRing(curve, 10, privKey, 0)
+	require.NoError(t, err)
+	sig, err := keyring.Sign(testMsg, privKey)
+	require.NoError(t, err)
+	sig2, err := keyring2.Sign(testMsg, privKey)
+	require.NoError(t, err)
+	require.False(t, sig.Ring().Equals(keyring2))
+	require.True(t, sig.Ring().Equals(keyring))
+	require.False(t, sig2.Ring().Equals(keyring))
+	require.True(t, sig2.Ring().Equals(keyring2))
+}
+
+func TestSign(t *testing.T) {
+	createSig(t, 9, 0)
+}
+
+func TestSignAgain(t *testing.T) {
+	createSig(t, 100, 17)
+}
+
+func TestVerify(t *testing.T) {
+	sig := createSig(t, 5, 4)
+	require.True(t, sig.Verify(testMsg))
+}
+
+func TestVerifyFalse(t *testing.T) {
+	curve := Secp256k1()
+	sig := createSig(t, 5, 2)
+
+	// alter signature
+	sig.c = curve.NewRandomScalar()
+	require.False(t, sig.Verify(testMsg))
+}
+
+func TestVerifyWrongMessage(t *testing.T) {
+	sig := createSig(t, 5, 1)
+	fakeMsg := sha3.Sum256([]byte("noot"))
+	require.False(t, sig.Verify(fakeMsg))
+}
+
+func TestLinkabilityTrue(t *testing.T) {
+	curve := Secp256k1()
+	privKey := curve.NewRandomScalar()
+	msg1 := "helloworld"
+	msgHash1 := sha3.Sum256([]byte(msg1))
+
+	keyring1, err := NewKeyRing(curve, 2, privKey, 0)
+	require.NoError(t, err)
+
+	sig1, err := keyring1.Sign(msgHash1, privKey)
+	require.NoError(t, err)
+
+	msg2 := "hello world"
+	msgHash2 := sha3.Sum256([]byte(msg2))
+
+	keyring2, err := NewKeyRing(curve, 2, privKey, 0)
+	require.NoError(t, err)
+
+	sig2, err := keyring2.Sign(msgHash2, privKey)
+	require.NoError(t, err)
+	require.True(t, Link(sig1, sig2))
+}
+
+func TestLinkabilityFalse(t *testing.T) {
+	curve := Secp256k1()
+	privKey1 := curve.NewRandomScalar()
+	msg1 := "helloworld"
+	msgHash1 := sha3.Sum256([]byte(msg1))
+
+	keyring1, err := NewKeyRing(curve, 2, privKey1, 0)
+	require.NoError(t, err)
+
+	sig1, err := keyring1.Sign(msgHash1, privKey1)
+	require.NoError(t, err)
+
+	privKey2 := curve.NewRandomScalar()
+	msg2 := "hello world"
+	msgHash2 := sha3.Sum256([]byte(msg2))
+
+	keyring2, err := NewKeyRing(curve, 2, privKey2, 0)
+	require.NoError(t, err)
+
+	sig2, err := keyring2.Sign(msgHash2, privKey2)
+	require.NoError(t, err)
+	require.False(t, Link(sig1, sig2))
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/helpers.go
+package ring
+
+import (
+	"fmt"
+
+	"filippo.io/edwards25519"
+	"filippo.io/edwards25519/field"
+	"github.com/athanorlabs/go-dleq/ed25519"
+	"github.com/athanorlabs/go-dleq/secp256k1"
+	"github.com/athanorlabs/go-dleq/types"
+	dsecp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"golang.org/x/crypto/sha3"
+)
+
+func hashToCurve(pk types.Point) types.Point {
+	switch k := pk.(type) {
+	case *ed25519.PointImpl:
+		return hashToCurveEd25519(k)
+	case *secp256k1.PointImpl:
+		return hashToCurveSecp256k1(k)
+	default:
+		panic("unsupported point type")
+	}
+}
+
+// hashToCurveEd25519 hashes a point and attempts to set the hash to a point.
+// It's effectively hashing to a y-coordinate, as an encoded ed25519 point
+// is the y-coordinate with the highest bit set for whether x is positive/negative.
+// It repeatedly hashes the hash until it finds a valid point.
+func hashToCurveEd25519(pk *ed25519.PointImpl) *ed25519.PointImpl {
+	const safety = 128
+	compressedKey := pk.Encode()
+	hash := sha3.Sum256(compressedKey)
+
+	for i := 0; i < safety; i++ {
+		point, err := new(edwards25519.Point).SetBytes(hash[:])
+		if err == nil {
+			return ed25519.NewPoint(
+				new(edwards25519.Point).MultByCofactor(point),
+			)
+		}
+
+		hash = sha3.Sum256(hash[:])
+	}
+
+	panic("failed to hash ed25519 point to curve")
+}
+
+// hashToCurveEd25519Alt hashes a point to a x-coordinate and attempts to find a
+// corresponding y-coordinate. It repeatedly hashes the hash until it finds a valid point.
+//
+// this is slightly slower than hashToCurveEd25519.
+// I *think* they're effectively the same security-wise, as this impl hashes to an x-coordinate,
+// and the above hashes to a y-coordinate.
+func hashToCurveEd25519Alt(pk *ed25519.PointImpl) *ed25519.PointImpl { //nolint:deadcode,unused
+	const safety = 128
+	compressedKey := pk.Encode()
+	hash := sha3.Sum512(compressedKey)
+
+	for i := 0; i < safety; i++ {
+		x, err := new(field.Element).SetWideBytes(hash[:])
+		if err != nil {
+			panic(err) // this shouldn't happen
+		}
+
+		point, err := decompressYEd25519(x)
+		if err == nil {
+			return point
+		}
+
+		hash = sha3.Sum512(hash[:])
+	}
+
+	panic("failed to hash ed25519 point to curve")
+}
+
+// see https://crypto.stackexchange.com/questions/101961/find-ed25519-y-coordinate-from-x-coordinate
+func decompressYEd25519(x *field.Element) (*ed25519.PointImpl, error) { //nolint:unused
+	// y^2 = (1 + x^2) / (1 + d*(x^2)) where d = 121665/121666
+	one := new(field.Element).One()
+	xSq := new(field.Element).Square(x)
+
+	// d*x^2
+	dd := new(field.Element).Mult32(one, 121666)
+	dd = new(field.Element).Invert(dd)
+	dxSq := new(field.Element).Mult32(xSq, 121665)
+	dxSq = new(field.Element).Multiply(dxSq, dd)
+
+	// (1 + d*x^2)^-1
+	denom := new(field.Element).Add(one, dxSq)
+	denom = new(field.Element).Invert(denom)
+
+	// 1 + x^2
+	num := new(field.Element).Add(one, xSq)
+
+	// find y
+	y, wasSquare := new(field.Element).SqrtRatio(num, denom)
+	if wasSquare != 1 {
+		return nil, fmt.Errorf("failed to decompress Y")
+	}
+
+	var out [32]byte
+	copy(out[:], y.Bytes())
+	out[31] |= byte(x.IsNegative() << 7)
+
+	point, err := new(edwards25519.Point).SetBytes(out[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return ed25519.NewPoint(
+		new(edwards25519.Point).MultByCofactor(point),
+	), nil
+}
+
+// based off https://github.com/particl/particl-core/blob/master/src/secp256k1/src/modules/mlsag/main_impl.h#L139
+func hashToCurveSecp256k1(pk *secp256k1.PointImpl) *secp256k1.PointImpl {
+	const safety = 128
+	compressedKey := pk.Encode()
+	hash := sha3.Sum256(compressedKey)
+	fe := &dsecp256k1.FieldVal{}
+	fe.SetBytes(&hash)
+	maybeY := &dsecp256k1.FieldVal{}
+
+	for i := 0; i < safety; i++ {
+		ok := dsecp256k1.DecompressY(fe, false, maybeY)
+		if ok {
+			return secp256k1.NewPointFromCoordinates(*fe, *maybeY)
+		}
+
+		hash = sha3.Sum256(hash[:])
+		fe.SetBytes(&hash)
+	}
+
+	return nil
+}
+
+
+File: /Users/olshansky/workspace/pocket/ring-go/examples/main.go
+package main
+
+import (
+	"fmt"
+
+	"golang.org/x/crypto/sha3"
+
+	ring "github.com/pokt-network/ring-go"
+)
+
+func signAndVerify(curve ring.Curve) {
+	privKey := curve.NewRandomScalar()
+	msgHash := sha3.Sum256([]byte("helloworld"))
+
+	// size of the public key ring (anonymity set)
+	const size = 16
+
+	// our key's secret index within the set
+	const idx = 7
+
+	keyring, err := ring.NewKeyRing(curve, size, privKey, idx)
+	if err != nil {
+		panic(err)
+	}
+
+	sig, err := keyring.Sign(msgHash, privKey)
+	if err != nil {
+		panic(err)
+	}
+
+	ok := sig.Verify(msgHash)
+	if !ok {
+		fmt.Println("failed to verify :(")
+		return
+	}
+
+	fmt.Println("verified signature!")
+}
+
+func main() {
+	fmt.Println("using secp256k1...")
+	signAndVerify(ring.Secp256k1())
+	fmt.Println("using ed25519...")
+	signAndVerify(ring.Ed25519())
+}
+
+
