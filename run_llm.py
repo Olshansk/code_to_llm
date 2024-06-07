@@ -1,7 +1,9 @@
 import argparse
 import os
 
-import openai
+from openai import OpenAI
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 # Function to read data from concat.txt
@@ -27,7 +29,6 @@ def get_gpt4_response(data, custom_prompt, programming_language):
     :return: The response from GPT-4
     """
     # Ensure the API key is set
-    openai.api_key = os.getenv("OPENAI_API_KEY")
 
     # System message for GPT-4 to specify its role
     system_message = {
@@ -39,12 +40,12 @@ def get_gpt4_response(data, custom_prompt, programming_language):
     user_message = {"role": "user", "content": f"{custom_prompt}\n\n{data}"}
 
     # Send the request to GPT-4 and get the response
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5", messages=[system_message, user_message]
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo-16k", messages=[system_message, user_message]
     )
 
     # Return the content of the response
-    return response.choices[0].message["content"]
+    return response.choices[0].message.content
 
 
 # Function to save response to a .diff file
@@ -116,6 +117,8 @@ if __name__ == "__main__":
             ```
 
             Please generate a unit test, with comments that tackles the question above in {args.programming_language}.
+
+            Specifically, give the code for a unit test to show that a ring size of 1 won't work.
 
             Here is the code:
         """
