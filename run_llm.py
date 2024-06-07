@@ -108,7 +108,7 @@ if __name__ == "__main__":
     # Parse arguments
     args = parser.parse_args()
 
-    if args.custom_prompt == "":
+    if args.custom_prompt == "" or args.custom_prompt is None:
         # args.custom_prompt = prompts.get_ring_prompt(args.programming_language)
         args.custom_prompt = prompts.get_smt_prompt()
 
