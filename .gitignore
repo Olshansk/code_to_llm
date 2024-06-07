@@ -2,3 +2,4 @@ venv/
 .env
 concat.txt
 output.diff
+__pycache__

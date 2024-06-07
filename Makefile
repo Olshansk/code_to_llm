@@ -1,7 +1,8 @@
 SHELL := /bin/bash
 
 # Define global defaults
-REPO_PATH ?= /Users/olshansky/workspace/pocket/ring-go
+# REPO_PATH ?= /Users/olshansky/workspace/pocket/ring-go
+REPO_PATH ?= /Users/olshansky/workspace/pocket/smt
 # EXTENSIONS ?= .go .md
 EXTENSIONS ?= .go
 OUTPUT_CONCAT_FILE_PATH ?= concat.txt

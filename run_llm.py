@@ -3,6 +3,8 @@ import os
 
 from openai import OpenAI
 
+import prompts
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
@@ -105,23 +107,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.custom_prompt == "":
-        args.custom_prompt = f"""
-            Below you will find the concatinated code for a ring signature library in Golang.
-
-            I received the following question:
-
-            ```
-                Question: Have you considered using a ring size 1 for such special cases? A ring of size 1 just reduces to a schnorr signature.
-                I'm not 100% sure if the library would actually just work if it was used to sign/verify with a ring size of 1, but a lot of the code seems like it would still mostly work when size = 1, i = 0; c[0] = c[(i + 1) % 1] even if the execution would be rather roundabout. But a better solution would be a short-circuit to a size = 1 special-case schnorr signature that skips the ring-specific parts.
-                Basically, instead of all the c[i] parts it would just be  c = challenge(ring.curve, m, l, r) and closing the ring on the single signer by calculating s = u.Sub(cx).
-            ```
-
-            Please generate a unit test, with comments that tackles the question above in {args.programming_language}.
-
-            Specifically, give the code for a unit test to show that a ring size of 1 won't work.
-
-            Here is the code:
-        """
+        # args.custom_prompt = prompts.get_ring_prompt(args.programming_language)
+        args.custom_prompt = prompts.get_smt_prompt()
 
     # Run main function with parsed arguments
     main(args.file_path, args.custom_prompt, args.programming_language, args.output)
