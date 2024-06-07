@@ -5,6 +5,7 @@ SHELL := /bin/bash
 REPO_PATH ?= /Users/olshansky/workspace/pocket/smt
 # EXTENSIONS ?= .go .md
 EXTENSIONS ?= .go
+EXCLUDED_EXTENSIONS = _test.go
 OUTPUT_CONCAT_FILE_PATH ?= concat.txt
 OUTPUT_DIFF_FILE_PATH ?= output.diff
 
@@ -64,7 +65,7 @@ py_format: check-env  ## Format the python code
 
 .PHONY: concat_repo
 concat_repo: check-env  ## Concatenate the files
-	python3 concat_repo.py $(REPO_PATH) $(EXTENSIONS) --output $(OUTPUT_CONCAT_FILE_PATH)
+	python3 concat_repo.py $(REPO_PATH) $(EXTENSIONS) $(EXCLUDED_EXTENSIONS) --output $(OUTPUT_CONCAT_FILE_PATH)
 	@echo "Concatenated files are in $(OUTPUT_CONCAT_FILE_PATH)"
 
 .PHONY: estimate_tokens

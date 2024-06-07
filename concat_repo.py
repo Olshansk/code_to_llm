@@ -2,7 +2,7 @@ import argparse
 import os
 
 
-def get_files_with_extensions(repo_path, extensions):
+def get_files_with_extensions(repo_path, extensions, excluded_extensions):
     """
     Traverse the repository and return a list of files that match the given extensions.
 
@@ -13,6 +13,10 @@ def get_files_with_extensions(repo_path, extensions):
     matched_files = []
     for root, dirs, files in os.walk(repo_path):
         for file in files:
+            for exc_ext in excluded_extensions:
+                if file.endswith(exc_ext):
+                    print(f"Excluding file: {file}")
+                    continue
             if any(file.endswith(ext) for ext in extensions):
                 matched_files.append(os.path.join(root, file))
     return matched_files
@@ -33,28 +37,29 @@ def concatenate_files(files):
     return concatenated_content
 
 
-def save_concatenated_repo(repo_path, extensions, output_path):
+def save_concatenated_repo(repo_path, extensions, excluded_extensions, output_path):
     """
     Save the concatenated content to an output file.
 
     :param content: Concatenated content to save
     :param output_path: Path to the output .txt file
     """
-    files = get_files_with_extensions(repo_path, extensions)
+    files = get_files_with_extensions(repo_path, extensions, excluded_extensions)
     concatenated_content = concatenate_files(files)
     with open(output_path, "w") as f:
         f.write(concatenated_content)
 
 
-def main(repo_path, extensions, output_path):
+def main(repo_path, extensions, excluded_extensions, output_path):
     """
     Main function to perform the concatenation of files and save the result.
 
     :param repo_path: Path to the Git repository
     :param extensions: List of file extensions to include
+    :param excluded_extensions: List of file extensions to exclude
     :param output_path: Path to the output .txt file
     """
-    save_concatenated_repo(repo_path, extensions, output_path)
+    save_concatenated_repo(repo_path, extensions, excluded_extensions, output_path)
 
 
 if __name__ == "__main__":
@@ -70,6 +75,12 @@ if __name__ == "__main__":
         help="List of file extensions to include (e.g., .py .txt)",
     )
     parser.add_argument(
+        "excluded_extensions",
+        type=str,
+        nargs="+",
+        help="List of file extensions to exclude exclude (e.g., _test.go)",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="output.diff",
@@ -80,4 +91,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Run main function with parsed arguments
-    main(args.repo_path, args.extensions, args.output)
+    main(args.repo_path, args.extensions, args.excluded_extensions, args.output)
