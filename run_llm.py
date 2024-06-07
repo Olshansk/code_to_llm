@@ -1,11 +1,12 @@
 import argparse
 import os
 
+import ollama
 from openai import OpenAI
 
 import prompts
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openaiClient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 # Function to read data from concat.txt
@@ -21,7 +22,7 @@ def read_data(file_path):
 
 
 # Function to send data to GPT-4 and get the response
-def get_gpt4_response(data, custom_prompt, programming_language):
+def get_openai_response(data, custom_prompt, programming_language):
     """
     Send data and a custom prompt to GPT-4 and retrieve the response.
 
@@ -41,15 +42,60 @@ def get_gpt4_response(data, custom_prompt, programming_language):
     # User message with the custom prompt and the data
     user_message = {"role": "user", "content": f"{custom_prompt}\n\n{data}"}
 
+    # model = "gpt-3.5-turbo-16k"
+    model = "gpt-4o"
+
     # Send the request to GPT-4 and get the response
-    response = client.chat.completions.create(
-        # model="gpt-3.5-turbo-16k", messages=[system_message, user_message]
-        model="gpt-4o",
+    response = openaiClient.chat.completions.create(
+        model=model,
         messages=[system_message, user_message],
     )
 
     # Return the content of the response
     return response.choices[0].message.content
+
+
+def get_ollama_response(data, custom_prompt, programming_language):
+    """
+    Send data and a custom prompt to ollama response.
+    """
+
+    # System message for GPT-4 to specify its role
+    system_message = {
+        "role": "system",
+        "content": f"You are an expert {programming_language} programmer.",
+    }
+
+    # User message with the custom prompt and the data
+    user_message = {"role": "user", "content": f"{custom_prompt}\n\n{data}"}
+
+    # Local model
+    model = "llama3:70b"
+
+    # response = ollama.chat(
+    #     model=model,
+    #     messages=[system_message, user_message],
+    # )
+
+    response = ollama.generate(
+        model=model,
+        prompt=user_message["content"],
+        system=system_message["content"],
+    )
+
+    # model
+    # prompt
+    # system
+    # template
+    # context
+    # stream
+    # raw
+    # format
+    # images
+    # options
+    # keep_alive
+
+    return response["response"]
 
 
 # Function to save response to a .diff file
@@ -77,8 +123,11 @@ def main(file_path, custom_prompt, programming_language, output_path):
     # Read the data from concat.txt
     data = read_data(file_path)
 
-    # Get the GPT-4 response
-    response = get_gpt4_response(data, custom_prompt, programming_language)
+    # # Get the GPT-4 response
+    response = get_openai_response(data, custom_prompt, programming_language)
+
+    # Get the ollama response
+    # response = get_ollama_response(data, custom_prompt, programming_language)
 
     # Save the response to a .diff file
     save_to_diff_file(response, output_path)

@@ -1,0 +1,233 @@
+### Suggestion:
+
+The simplest and most efficient way to get the total number of non-empty leaves in the tree would be to use the second approach you suggested. This involves appending a `count` directly to the node. Specifically, for each node, add a `count` field that tracks the number of non-empty leaves in the subtree rooted at that node. This ensures that the `count` is always up to date when traversing or modifying the tree, and avoids the inefficiencies of reading directly from the key-value store.
+
+Here's a step-by-step explanation:
+
+1. **Node Modification**: Extend the existing structures (`leafNode` and `innerNode`) to include a `count` field that keeps track of the number of non-empty leaves for that node.
+2. **Update Insertions and Deletions**: Modify the `Update` and `Delete` methods to update the `count` field appropriately as elements are added or removed.
+3. **Propagation**: The `count` needs to be propagated up the tree whenever nodes are modified.
+
+This approach embeds the `count` within the tree structure itself, ensuring it is always in synchronization with the state of the tree and accessible without extra overhead.
+
+### Code Diff:
+
+```diff
+diff --git a/smt.go b/smt.go
+index abcdef1..1234567 100644
+--- a/smt.go
++++ b/smt.go
+@@ -21,6 +21,7 @@ type SMT struct {
+ 
+ type orphanNodes = [][]byte
+ 
++var _ SparseMerkleSumTrie = (*SMST)(nil)
+ 
+ func NewSparseMerkleTrie(
+ 	nodes kvstore.MapStore,
+@@ -242,6 +243,7 @@ func (smt *SMT) delete(node trieNode, depth int, path []byte, orphans *orphanNod
+ 			return n, nil
+ 		}
+ 		switch n := extNode.child.(type) {
++		
+ 		case *leafNode:
+ 			return n, nil
+ 		case *extensionNode:
+@@ -370,24 +372,54 @@ func (smst *SMST) Commit() error {
+ return smst.SMT.Close()
+ }
+
+// GetTotalNonEmptyLeaves gets the total number of non-empty leaves in the
+// trie.
+func (smst *SMST) GetTotalNonEmptyLeaves() int {
+	_, count := getNonEmptyLeavesCount(smst.root)
+	return count
+}
+
+// getNonEmptyLeavesCount traverses the Trie recursively to count the number
+// of non-empty leaves in the subtree for the given node.
+func getNonEmptyLeavesCount(node trieNode) (trieNode, int) {
+	var count int
+	switch n := node.(type) {
+	case *lazyNode:
+		return getNonEmptyLeavesCount(resolveNode(n.digest))
+	case *leafNode:
+		if !bytes.Equal(n.valueHash, defaultEmptyValue) {
+			count = 1
+		}
+		return n, count
+	case *innerNode:
+		leftChild, leftCount := getNonEmptyLeavesCount(n.leftChild)
+		rightChild, rightCount := getNonEmptyLeavesCount(n.rightChild)
+		n.leftChild = leftChild
+		n.rightChild = rightChild
+		count = leftCount + rightCount
+		return n, count
+	case *extensionNode:
+		child, innerCount := getNonEmptyLeavesCount(n.child)
+		n.child = child
+		count = innerCount
+		return n, count
+	default:
+		return nil, 0
+	}
+}
+```
+
+### Explanation:
+
+1. **Adding `count` in Nodes**: First, extend the `leafNode` and `innerNode` structures to contain a `count` representing the number of non-empty leaves in their respective subtrees. This involves simple structural updates to these nodes.
+
+2. **Node Struct Modification**: Modify the existing structures in `smt.go` and `inner_node.go` to include the new `count` field:
+
+    ```golang
+    type leafNode struct {
+        path      []byte
+        valueHash []byte
+        persisted bool
+        digest    []byte
+        count     int
+    }
+
+    type innerNode struct {
+        leftChild, rightChild trieNode
+        persisted             bool
+        digest                []byte
+        count                 int
+    }
+    ```
+
+   Similarly, update the `commit` and `delete` methods to handle changes in `count` by adjusting it as required based on insertions and deletions.
+
+3. **Updating Trie Operations**: Modify the `Update` and `Delete` methods to update the values of `count` fields whenever nodes are changed or created. This keeps the count accurate as the tree changes.
+
+    ```golang
+    func (smt *SMT) update(
+        node trieNode,
+        depth int,
+        path, value []byte,
+        orphans *orphanNodes,
+    ) (trieNode, error) {
+        node, err := smt.resolveLazy(node)
+        if err != nil {
+            return node, err
+        }
+    
+        if leaf, ok := node.(*leafNode); ok {
+            if !bytes.Equal(leaf.path, node.path) {
+                smt.addOrphan(orphans, node)
+                newLeaf := &leafNode{path: path, valueHash: value, count: 1}
+                return newLeaf, nil
+            }
+        }
+    
+        smt.addOrphan(orphans, node)
+    
+        if inner, ok := node.(*innerNode); ok {
+            if getPathBit(path, depth) == leftChildBit {
+                child, _ := smt.update(inner.leftChild, depth+1, path, value, orphans)
+                inner.leftChild = child
+            } else {
+                child, _ := smt.update(inner.rightChild, depth+1, path, value, orphans)
+                inner.rightChild = child
+            }
+            inner.count = getNonEmptyLeavesCount(inner.leftChild).count + getNonEmptyLeavesCount(inner.rightChild).count
+            return inner, nil
+        }
+    
+        return node, nil
+    }
+
+    func (smt *SMT) delete(
+        node trieNode,
+        depth int,
+        path []byte,
+        orphans *orphanNodes,
+    ) (trieNode, error) {
+        node, err := smt.resolveLazy(node)
+        if err != nil {
+            return node, err
+        }
+    
+        if node == nil {
+            return node, ErrKeyNotFound
+        }
+    
+        if leaf, ok := node.(*leafNode); ok {
+            if !bytes.Equal(path, leaf.path) {
+                return node, ErrKeyNotFound
+            }
+            smt.addOrphan(orphans, node)
+            return nil, nil
+        }
+    
+        smt.addOrphan(orphans, node)
+    
+        if extNode, ok := node.(*extensionNode); ok {
+            if _, fullMatch := extNode.boundsMatch(path, depth); !fullMatch {
+                return node, ErrKeyNotFound
+            }
+            extNode.child, err = smt.delete(extNode.child, depth+extNode.length(), path, orphans)
+            if err != nil {
+                return node, err
+            }
+            extNode.setDirty()
+            return extNode, nil
+        }
+    
+        inner := node.(*innerNode)
+        var child, sib *trieNode
+        if getPathBit(path, depth) == leftChildBit {
+            child, sib = &inner.leftChild, &inner.rightChild
+        } else {
+            child, sib = &inner.rightChild, &inner.leftChild
+        }
+        *child, err = smt.delete(*child, depth+1, path, orphans)
+        if err != nil {
+            return node, err
+        }
+        *sib, err = smt.resolveLazy(*sib)
+        if err != nil {
+            return node, err
+        }
+        inner.count = getNonEmptyLeavesCount(inner.leftChild).count + getNonEmptyLeavesCount(inner.rightChild).count
+        inner.setDirty()
+        return inner, nil
+    }
+    ```
+
+4. **Getting Total Non-Empty Leaves**: Add a utility function (`GetTotalNonEmptyLeaves`) in `smst.go` to traverse the tree recursively and calculate the total count from the root node.
+
+    ```golang
+    func (smst *SMST) GetTotalNonEmptyLeaves() int {
+        root, count := getNonEmptyLeavesCount(smt.root)
+        smst.root = root
+        return count
+    }
+
+    func getNonEmptyLeavesCount(node trieNode) (trieNode, int) {
+        if node == nil {
+            return nil, 0
+        }
+        switch n := node.(type) {
+        case *leafNode:
+            if len(n.valueHash) != 0 {
+                return n, 1
+            }
+            return n, 0
+        case *innerNode:
+            leftChild, leftCount := getNonEmptyLeavesCount(n.leftChild)
+            rightChild, rightCount := getNonEmptyLeavesCount(n.rightChild)
+            n.leftChild = leftChild
+            n.rightChild = rightChild
+            return n, leftCount + rightCount
+        case *extensionNode:
+            child, innerCount := getNonEmptyLeavesCount(n.child)
+            n.child = child
+            return n, innerCount
+        }
+        return nil, 0
+    }
+    ```
+
+This approach ensures that the count is always synchronized with tree changes, preserving efficiency and simplicity. Additionally, the introduction of a `count` field avoids the overhead of external data retrieval, keeping the tree's operations optimized and consistent.

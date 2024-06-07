@@ -1,5 +1,7 @@
 venv/
 .env
 concat.txt
+ollama.diff
 output.diff
+output_gpt4o.diff
 __pycache__
