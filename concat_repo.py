@@ -13,10 +13,14 @@ def get_files_with_extensions(repo_path, extensions, excluded_extensions):
     matched_files = []
     for root, dirs, files in os.walk(repo_path):
         for file in files:
+            skip = False
             for exc_ext in excluded_extensions:
                 if file.endswith(exc_ext):
                     print(f"Excluding file: {file}")
-                    continue
+                    skip = True
+                    break
+            if skip:
+                continue
             if any(file.endswith(ext) for ext in extensions):
                 matched_files.append(os.path.join(root, file))
     return matched_files

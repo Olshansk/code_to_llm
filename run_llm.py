@@ -43,7 +43,9 @@ def get_gpt4_response(data, custom_prompt, programming_language):
 
     # Send the request to GPT-4 and get the response
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo-16k", messages=[system_message, user_message]
+        # model="gpt-3.5-turbo-16k", messages=[system_message, user_message]
+        model="gpt-4o",
+        messages=[system_message, user_message],
     )
 
     # Return the content of the response
