@@ -5,6 +5,7 @@ import ollama
 from openai import OpenAI
 
 import prompts
+import system
 
 openaiClient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -22,25 +23,20 @@ def read_data(file_path):
 
 
 # Function to send data to GPT-4 and get the response
-def get_openai_response(data, custom_prompt, programming_language):
+def get_openai_response(prompt, system_prompt):
     """
     Send data and a custom prompt to GPT-4 and retrieve the response.
-
-    :param data: The concatenated file content to send to GPT-4
-    :param custom_prompt: The custom prompt to guide GPT-4
-    :param programming_language: The programming language to specify in the system message
-    :return: The response from GPT-4
     """
     # Ensure the API key is set
 
     # System message for GPT-4 to specify its role
     system_message = {
         "role": "system",
-        "content": f"You are an expert {programming_language} programmer.",
+        "content": system_prompt,
     }
 
     # User message with the custom prompt and the data
-    user_message = {"role": "user", "content": f"{custom_prompt}\n\n{data}"}
+    user_message = {"role": "user", "content": prompt}
 
     # model = "gpt-3.5-turbo-16k"
     model = "gpt-4o"
@@ -55,7 +51,7 @@ def get_openai_response(data, custom_prompt, programming_language):
     return response.choices[0].message.content
 
 
-def get_ollama_response(data, custom_prompt, programming_language):
+def get_ollama_response(prompt, system_prompt):
     """
     Send data and a custom prompt to ollama response.
     """
@@ -63,11 +59,11 @@ def get_ollama_response(data, custom_prompt, programming_language):
     # System message for GPT-4 to specify its role
     system_message = {
         "role": "system",
-        "content": f"You are an expert {programming_language} programmer.",
+        "content": system_prompt,
     }
 
     # User message with the custom prompt and the data
-    user_message = {"role": "user", "content": f"{custom_prompt}\n\n{data}"}
+    user_message = {"role": "user", "content": prompt}
 
     # Local model
     model = "llama3:70b"
@@ -82,18 +78,6 @@ def get_ollama_response(data, custom_prompt, programming_language):
         prompt=user_message["content"],
         system=system_message["content"],
     )
-
-    # model
-    # prompt
-    # system
-    # template
-    # context
-    # stream
-    # raw
-    # format
-    # images
-    # options
-    # keep_alive
 
     return response["response"]
 
@@ -111,7 +95,7 @@ def save_to_diff_file(response, output_path):
 
 
 # Main function to coordinate reading, processing, and saving
-def main(file_path, custom_prompt, programming_language, output_path):
+def main(file_path, custom_prompt_fn, programming_language, output_path):
     """
     Main function to generate a unit test diff using GPT-4.
 
@@ -122,12 +106,14 @@ def main(file_path, custom_prompt, programming_language, output_path):
     """
     # Read the data from concat.txt
     data = read_data(file_path)
+    prompt = custom_prompt_fn(data)
+    system_prompt = system.get_system_prompt(programming_language)
 
     # # Get the GPT-4 response
-    response = get_openai_response(data, custom_prompt, programming_language)
+    response = get_openai_response(prompt, system_prompt)
 
     # Get the ollama response
-    # response = get_ollama_response(data, custom_prompt, programming_language)
+    # response = get_ollama_response(prompt, system_prompt)
 
     # Save the response to a .diff file
     save_to_diff_file(response, output_path)
@@ -146,7 +132,6 @@ if __name__ == "__main__":
         default="",
         help="Output file path for the diff content",
     )
-    parser.add_argument("--custom_prompt", type=str, help="Custom prompt for GPT-4")
     parser.add_argument(
         "--programming_language",
         type=str,
@@ -157,9 +142,7 @@ if __name__ == "__main__":
     # Parse arguments
     args = parser.parse_args()
 
-    if args.custom_prompt == "" or args.custom_prompt is None:
-        # args.custom_prompt = prompts.get_ring_prompt(args.programming_language)
-        args.custom_prompt = prompts.get_smt_prompt()
+    args.custom_prompt_fn = prompts.get_smt_prompt
 
     # Run main function with parsed arguments
-    main(args.file_path, args.custom_prompt, args.programming_language, args.output)
+    main(args.file_path, args.custom_prompt_fn, args.programming_language, args.output)

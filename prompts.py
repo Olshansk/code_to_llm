@@ -1,6 +1,50 @@
+def get_smt_prompt(code) -> str:
+    return f"""
+        Below the '~~~ code ~~~' line, you will find the concatenated code for
+        a sparse merkle sum trie library in Golang.
+
+        Your goal is to implement a solution to get the total number of non-empty
+        leaves in the tree. The goal of this is to simply count the number of
+        elements that were inserted into the tree.
+
+        A few things to keep in mind as you design a solution:
+        1. It has to be simple as possible, but no simpler.
+        2. It has to be efficient and practical, but not over-engineered.
+        3. It has to be understandable to others who may read the code.
+        4. It has to be cryptographically secure.
+
+        What to include in your solution:
+        1. Provide a 1 pager explain the different approaches with tradeoffs.
+        2. Provide a 1 pager explaining the solution you chose and why.
+        3. Provide a complete `solution.diff` file with the result that can be
+           applied via `git apply solution.diff` to the code provided.
+        4. Ensure to include both the implementation and unit tests.
+        5. Separate each of the above with '---' in the response you provide.
+
+        A few approaches I've considered are are:
+        1. Getting the number of key-value pairs directly from the underlying key-value
+           store engine. However, this is not cryptographically secure.
+        2. Appending the `count` to the right next to how `sum` is implemented.
+           I didn't see any issues with it, but haven't thought about the tradeoffs.
+        3. Similar to (2), but using a structure that contains both `sum` and `count`
+           that is encoded using gob/encoding. This is more complex, and I felt like
+           it was over-engineered.
+
+        The suggested approaches above are just my initial ideas, but you are the
+        expert, so feel free to take a different approach if you deem so.
+
+        If there are any questions, please specify those as well alongside the
+        best solution you can provide, explain and implement.
+
+        ~~~ code ~~~
+
+        {code}
+    """
+
+
 def get_ring_prompt(programming_language: str) -> str:
     return f"""
-        Below you will find the concatinated code for a ring signature library in Golang.
+        Below you will find the concatenated code for a ring signature library in Golang.
 
         I received the following question:
 
@@ -15,34 +59,4 @@ def get_ring_prompt(programming_language: str) -> str:
         Specifically, give the code for a unit test to show that a ring size of 1 won't work.
 
         Here is the code:
-    """
-
-
-def get_smt_prompt() -> str:
-    return f"""
-        Below you will find the concatinated code for a sparse merkle sum trie library in Golang
-
-        You will find that there is a `sum` that is use to determine the total
-        sum of a node given the sum of all nodes in that subtree.
-
-        My goal is to do the following: Get the total number of non-empty leaves in the tree.
-
-        A few approaches I've thought about are:
-        1. Reading directly from the underlying key-value store engine.
-        2. Appending the `count` to the right of the `sum` in the node.
-        3. A similar solution to (2), but using a structure that contains both `sum` and `count`.
-
-        Take the following into consideration:
-        1. It has to be simple
-        2. It has to be efficient
-        3. No need to over complicate things
-        4. It has to be understandable
-        5. It has to be cryptographically secure
-
-        Given the code below, please do the following:
-        1. Explain your suggestion
-        2. Provide a short `.diff` file with a code snippet of how it would look
-        3. Provide a 0.5-1 page explanation of your suggestion
-
-        ---
     """
